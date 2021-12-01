@@ -1,0 +1,6 @@
+px:
+  user: b1397270-4d24-11ec-b486-7287e80c8e63
+  cluster: px-cluster-7e28805d-0800-4873-bbbf-cf1138a83327
+  size: 100
+  kvdb: 150
+host: z-argocd.cloud.maileva.net

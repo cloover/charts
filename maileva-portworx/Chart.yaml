@@ -1,0 +1,5 @@
+apiVersion: v2
+name: "maileva-portworx"
+version: "1.0.0"
+#kubeVersion: ">=1.21.0"
+description: "Portworx adaptation for maileva needs"

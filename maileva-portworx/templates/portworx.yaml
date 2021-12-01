@@ -1,0 +1,325 @@
+# SOURCE: https://install.portworx.com/?mc=false&kbver=1.21.0&oem=esse&user=b1397270-4d24-11ec-b486-7287e80c8e63&b=true&kd=type%3Dgp2%2Csize%3D150&mz=3&s=%22type%3Dgp2%2Csize%3D150%22&c=px-cluster-b5f46cb8-9eda-49f1-a307-fe0c94b6df0a&eks=true&stork=true&csi=true&lh=true&mon=true&tel=false&st=k8s
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: portworx-service
+  namespace: kube-system
+  labels:
+    name: portworx
+spec:
+  selector:
+    name: portworx
+  type: ClusterIP
+  ports:
+    - name: px-api
+      protocol: TCP
+      port: 9001
+      targetPort: 9001
+    - name: px-kvdb
+      protocol: TCP
+      port: 9019
+      targetPort: 9019
+    - name: px-sdk
+      protocol: TCP
+      port: 9020
+      targetPort: 9020
+    - name: px-rest-gateway
+      protocol: TCP
+      port: 9021
+      targetPort: 9021
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: px-account
+  namespace: kube-system
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: px-essential
+  namespace: kube-system
+data:
+  px-essen-user-id: YjEzOTcyNzAtNGQyNC0xMWVjLWI0ODYtNzI4N2U4MGM4ZTYz
+  px-osb-endpoint: aHR0cHM6Ly9weGVzc2VudGlhbHMucG9ydHdvcnguY29tL29zYi9iaWxsaW5nL3YxL3JlZ2lzdGVy
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: portworx
+  namespace: kube-system
+  labels:
+    name: portworx
+  annotations:
+    portworx.com/install-source: "https://install.portworx.com/?mc=false&kbver=1.21.0&oem=esse&user={{ .Values.px.user }}&b=true&kd=type%3Dgp2%2Csize%3D150&mz=3&s=%22type%3Dgp2%2Csize%3D100%22&c={{ .Values.px.cluster }}&eks=true&stork=true&csi=true&lh=true&mon=true&tel=false&st=k8s"
+spec:
+  selector:
+    matchLabels:
+      name: portworx
+  minReadySeconds: 0
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        name: portworx
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: px/enabled
+                operator: NotIn
+                values:
+                - "false"
+              - key: node-role.kubernetes.io/master
+                operator: DoesNotExist
+      hostNetwork: true
+      hostPID: false
+      containers:
+        - name: portworx
+          image: portworx/oci-monitor:2.8.1.2
+          imagePullPolicy: Always
+          args:
+            ["-c", "{{ .Values.px.cluster }}", "-s", "type=gp2,size={{ .Values.px.size }}", "-secret_type", "k8s", "-kvdb_dev", "type=gp2,size={{ .Values.px.kvdb }}", "-b", "--oem", "esse", "-cloud_provider", "aws", "-max_storage_nodes_per_zone", "3", 
+             "-x", "kubernetes"]
+          env:
+            - name: "PX_TEMPLATE_VERSION"
+              value: "v4"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: PX_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: CSI_ENDPOINT
+              value: unix:///var/lib/kubelet/plugins/pxd.portworx.com/csi.sock
+            
+          livenessProbe:
+            periodSeconds: 30
+            initialDelaySeconds: 840 # allow image pull in slow networks
+            httpGet:
+              host: 127.0.0.1
+              path: /status
+              port: 9001
+          readinessProbe:
+            periodSeconds: 10
+            httpGet:
+              host: 127.0.0.1
+              path: /health
+              port: 9015
+          terminationMessagePath: "/tmp/px-termination-log"
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: diagsdump
+              mountPath: /var/cores
+            - name: dockersock
+              mountPath: /var/run/docker.sock
+            - name: containerdsock
+              mountPath: /run/containerd
+            - name: criosock
+              mountPath: /var/run/crio
+            - name: etcpwx
+              mountPath: /etc/pwx
+            - name: dev
+              mountPath: /dev
+            - name: optpwx
+              mountPath: /opt/pwx
+            - name: procmount
+              mountPath: /host_proc
+            - name: sysdmount
+              mountPath: /etc/systemd/system
+            - name: journalmount1
+              mountPath: /var/run/log
+              readOnly: true
+            - name: journalmount2
+              mountPath: /var/log
+              readOnly: true
+            - name: dbusmount
+              mountPath: /var/run/dbus
+        - name: csi-node-driver-registrar
+          image: k8s.gcr.io/sig-storage/csi-node-driver-registrar:v2.1.0
+          imagePullPolicy: Always
+          args:
+            - "--v=5"
+            - "--csi-address=$(ADDRESS)"
+            - "--kubelet-registration-path=/var/lib/kubelet/plugins/pxd.portworx.com/csi.sock"
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: csi-driver-path
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+      restartPolicy: Always
+      serviceAccountName: px-account
+      volumes:
+        - name: diagsdump
+          hostPath:
+            path: /var/cores
+        - name: dockersock
+          hostPath:
+            path: /var/run/docker.sock
+        - name: containerdsock
+          hostPath:
+            path: /run/containerd
+        - name: criosock
+          hostPath:
+            path: /var/run/crio
+        - name: etcpwx
+          hostPath:
+            path: /etc/pwx
+        - name: dev
+          hostPath:
+            path: /dev
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry
+            type: DirectoryOrCreate
+        - name: csi-driver-path
+          hostPath:
+            path: /var/lib/kubelet/plugins/pxd.portworx.com
+            type: DirectoryOrCreate
+        - name: optpwx
+          hostPath:
+            path: /opt/pwx
+        - name: procmount
+          hostPath:
+            path: /proc
+        - name: sysdmount
+          hostPath:
+            path: /etc/systemd/system
+        - name: journalmount1
+          hostPath:
+            path: /var/run/log
+        - name: journalmount2
+          hostPath:
+            path: /var/log
+        - name: dbusmount
+          hostPath:
+            path: /var/run/dbus
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: px-csi-account
+  namespace: kube-system
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: px-csi-service
+  namespace: kube-system
+spec:
+  clusterIP: None
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: px-csi-ext
+  namespace: kube-system
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: px-csi-driver
+  template:
+    metadata:
+      labels:
+        app: px-csi-driver
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: px/enabled
+                operator: NotIn
+                values:
+                - "false"
+              - key: node-role.kubernetes.io/master
+                operator: DoesNotExist
+      serviceAccount: px-csi-account
+      containers:
+        - name: csi-external-provisioner
+          image: docker.io/openstorage/csi-provisioner:v1.6.1-1
+          imagePullPolicy: Always
+          args:          
+            - "--v=3"
+            - "--provisioner=pxd.portworx.com"
+            - "--csi-address=$(ADDRESS)"
+            - "--enable-leader-election"
+            - "--leader-election-type=leases"
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-snapshotter
+          image: k8s.gcr.io/sig-storage/csi-snapshotter:v4.0.0
+          imagePullPolicy: Always
+          args:
+            - "--v=3"
+            - "--csi-address=$(ADDRESS)"
+            - "--leader-election=true"
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-snapshot-controller
+          image: k8s.gcr.io/sig-storage/snapshot-controller:v4.0.0
+          imagePullPolicy: Always
+          args:
+            - "--v=3"
+            - "--leader-election=true"
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-resizer
+          image: k8s.gcr.io/sig-storage/csi-resizer:v1.1.0
+          imagePullPolicy: Always
+          args:
+            - "--v=3"
+            - "--csi-address=$(ADDRESS)"
+            - "--leader-election=true"
+          env:
+            - name: ADDRESS
+              value: /csi/csi.sock
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+      volumes:
+        - name: socket-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/pxd.portworx.com
+            type: DirectoryOrCreate
